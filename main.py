@@ -1,16 +1,16 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from openai import OpenAI
+import requests
 import re
+import json
+import os
 
 app = Flask(__name__)
 CORS(app)
 
-# OpenRouter API Client
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key="sk-or-v1-DEIN_NEUER_API_KEY_HIER",  # <-- ERSETZE DAS!
-)
+# ⚠️ WICHTIG: Ersetze mit deinem API Key!
+API_KEY = os.environ.get("OPENROUTER_API_KEY", "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")
+API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # System Prompt für Roblox Lua Code Generation
 SYSTEM_PROMPT = """Du bist ein Experte für Roblox Lua Programmierung. 
@@ -39,12 +39,37 @@ Wenn mehrere Scripts benötigt werden, gib ein Array zurück:
 ]
 """
 
+def call_ai(messages):
+    """Ruft die OpenRouter API direkt auf"""
+    headers = {
+        "Authorization": f"Bearer {API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://roblox-ai-plugin.com",
+        "X-Title": "Roblox AI Code Generator"
+    }
+    
+    data = {
+        "model": "nex-agi/deepseek-v3.1-nex-n1:free",
+        "messages": messages,
+        "temperature": 0.7,
+        "max_tokens": 4000
+    }
+    
+    response = requests.post(API_URL, headers=headers, json=data, timeout=120)
+    response.raise_for_status()
+    return response.json()
+
 @app.route('/', methods=['GET'])
 def home():
     return jsonify({
         "status": "online",
         "service": "Roblox AI Code Generator",
-        "version": "1.0.0"
+        "version": "1.0.0",
+        "endpoints": {
+            "health": "/health",
+            "generate": "/generate (POST)",
+            "generate_simple": "/generate-simple (POST)"
+        }
     })
 
 @app.route('/health', methods=['GET'])
@@ -66,27 +91,18 @@ def generate_code():
         user_prompt = data['prompt']
         
         # AI Request
-        completion = client.chat.completions.create(
-            extra_headers={
-                "HTTP-Referer": "https://roblox-ai-plugin.com",
-                "X-Title": "Roblox AI Code Generator",
-            },
-            model="nex-agi/deepseek-v3.1-nex-n1:free",
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.7,
-            max_tokens=4000
-        )
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt}
+        ]
         
-        response_text = completion.choices[0].message.content
+        result = call_ai(messages)
+        response_text = result['choices'][0]['message']['content']
         
         # JSON aus der Antwort extrahieren
         json_match = re.search(r'[\[\{].*[\]\}]', response_text, re.DOTALL)
         
         if json_match:
-            import json
             try:
                 scripts_data = json.loads(json_match.group())
                 # Einzelnes Objekt in Liste umwandeln
@@ -120,6 +136,16 @@ def generate_code():
                 }]
             })
             
+    except requests.exceptions.Timeout:
+        return jsonify({
+            "success": False,
+            "error": "AI Request timeout - bitte erneut versuchen"
+        }), 504
+    except requests.exceptions.RequestException as e:
+        return jsonify({
+            "success": False,
+            "error": f"API Fehler: {str(e)}"
+        }), 502
     except Exception as e:
         return jsonify({
             "success": False,
@@ -135,24 +161,16 @@ def generate_simple():
         if not data or 'prompt' not in data:
             return jsonify({"success": False, "error": "Kein Prompt"}), 400
         
-        completion = client.chat.completions.create(
-            extra_headers={
-                "HTTP-Referer": "https://roblox-ai-plugin.com",
-                "X-Title": "Roblox AI Code Generator",
+        messages = [
+            {
+                "role": "system", 
+                "content": "Du bist ein Roblox Lua Experte. Antworte NUR mit funktionierendem Lua Code. Keine Erklärungen, nur Code."
             },
-            model="nex-agi/deepseek-v3.1-nex-n1:free",
-            messages=[
-                {
-                    "role": "system", 
-                    "content": "Du bist ein Roblox Lua Experte. Antworte NUR mit funktionierendem Lua Code. Keine Erklärungen, nur Code."
-                },
-                {"role": "user", "content": data['prompt']}
-            ],
-            temperature=0.7,
-            max_tokens=4000
-        )
+            {"role": "user", "content": data['prompt']}
+        ]
         
-        code = completion.choices[0].message.content
+        result = call_ai(messages)
+        code = result['choices'][0]['message']['content']
         
         # Code-Block Markdown entfernen falls vorhanden
         code = re.sub(r'^```lua\n?', '', code)
@@ -170,7 +188,24 @@ def generate_simple():
             "error": str(e)
         }), 500
 
+@app.route('/test-ai', methods=['GET'])
+def test_ai():
+    """Test endpoint um AI Verbindung zu prüfen"""
+    try:
+        messages = [
+            {"role": "user", "content": "Say 'Hello Roblox!' and nothing else."}
+        ]
+        result = call_ai(messages)
+        return jsonify({
+            "success": True,
+            "response": result['choices'][0]['message']['content']
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
 if __name__ == '__main__':
-    import os
     port = int(os.environ.get('PORT', 8000))
     app.run(host='0.0.0.0', port=port, debug=False)
